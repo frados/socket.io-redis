@@ -49,6 +49,8 @@ function adapter(uri, opts){
   var sub = opts.subClient;
   var prefix = opts.key || 'socket.io';
 
+  var commandTimeout = opts.commandTimeout || 1000;
+
   // init clients if needed
   if (!pub) pub = redis(port, host);
   if (!sub) sub = redis(port, host, { detect_buffers: true });
@@ -59,7 +61,7 @@ function adapter(uri, opts){
   // this server's key
   var uid = uid2(6);
 
-  // 
+  // Callback for 'getClients' request
   opts.getClients = getClients;
   
   /**
@@ -290,7 +292,7 @@ function adapter(uri, opts){
       deferred.resolve({request: requestId});
       responseListener.removeListener('message', responseCallback);
       responseListener.unsubscribe(responseChannel);
-    }, 500);
+    }, commandTimeout);
 
     return deferedPromise.then(function(data) {
       data.servers = data.servers || {};
@@ -329,12 +331,12 @@ function adapter(uri, opts){
     if ( typeof( opts[command] ) == "function") {
       return opts[command].bind( this.nsp );
     } else {
-      return this.callbackOnRedisCommand_basic.bind(this, command);
+      return this.callbackOnCommand.bind(this, command);
     }
   }  
   
-  
-  Redis.prototype.callbackOnRedisCommand_basic= function(command, request, options) {
+  // Default callback for any commands
+  Redis.prototype.callbackOnCommand = function(command, request, options) {
     return {
       request: request,
       response: {
@@ -353,6 +355,13 @@ function adapter(uri, opts){
 
 }
 
+/**
+ * Function that runs on each of socket.io nodes. It returns list of active connections(ID)
+ * 
+ * @param  {String} request 
+ * @param  {Object} options
+ * @return {Object} { request: "request ID", response: {...} }
+ */
 function getClients (request, options){
   var clients = [];
 
