@@ -10,6 +10,7 @@ var Adapter = require('socket.io-adapter');
 var Emitter = require('events').EventEmitter;
 var debug = require('debug')('socket.io-redis');
 var async = require('async');
+var Q = require('q');
 
 /**
  * Module exports.
@@ -52,9 +53,15 @@ function adapter(uri, opts){
   if (!pub) pub = redis(port, host);
   if (!sub) sub = redis(port, host, { detect_buffers: true });
 
+  var commandListener = redis(port, host, { detect_buffers: true });
+  var responseListener = redis(port, host, { detect_buffers: true });
+
   // this server's key
   var uid = uid2(6);
 
+  // 
+  opts.getClients = getClients;
+  
   /**
    * Adapter constructor.
    *
@@ -66,6 +73,7 @@ function adapter(uri, opts){
     Adapter.call(this, nsp);
 
     this.uid = uid;
+    this.nsp = nsp;
     this.prefix = prefix;
     this.pubClient = pub;
     this.subClient = sub;
@@ -75,6 +83,11 @@ function adapter(uri, opts){
       if (err) self.emit('error', err);
     });
     sub.on('message', this.onmessage.bind(this));
+
+    commandListener.subscribe(prefix + '#commands#' + nsp.name + '#', function(err){
+      if (err) self.emit('error', err);
+    });
+    commandListener.on('message', this.oncommand.bind(this));
   }
 
   /**
@@ -239,6 +252,98 @@ function adapter(uri, opts){
     });
   };
 
+
+  Redis.prototype.requestToAll = function(command, options){
+    var requestId = uid2(6);
+    var responseChannel = prefix + '#response#' + this.nsp.name + '#' + requestId;
+    var deferred = Q.defer();
+    var deferedPromise = deferred.promise;
+
+    
+    function responseCallback(channel, msg) {
+      var params = msgpack.decode(msg),
+          answererRequestId = params[0], 
+          answererServerId = params[1], 
+          answererResponse = params[2];
+      
+      deferedPromise.then(function(data) {
+        if (data.request != answererRequestId) {
+          return data;
+        }
+        data.servers = data.servers || {};
+        data.servers[answererServerId] = answererResponse;
+        return data;
+      });
+    }
+
+    responseListener.subscribe(responseChannel, function(err){
+      if (err) this.emit('error', err);
+    }.bind(this));
+    responseListener.on('message', responseCallback);
+    
+    var chn = prefix + '#commands#' + this.nsp.name + '#';
+    var msg = msgpack.encode([requestId, this.uid, this.nsp.name, command, responseChannel, options]);
+    
+    pub.publish(chn, msg);
+
+    setTimeout(function() {
+      deferred.resolve({request: requestId});
+      responseListener.removeListener('message', responseCallback);
+      responseListener.unsubscribe(responseChannel);
+    }, 500);
+
+    return deferedPromise.then(function(data) {
+      data.servers = data.servers || {};
+      data.servers[this.uid] = this.getCallbackOnRedisCommand(command)(requestId, options);
+      return data; 
+    }.bind(this) );
+  };
+
+
+  Redis.prototype.oncommand = function(channel, msg){
+    var args = msgpack.decode(msg), 
+        nspName, command, options, response, result, requestId;
+
+    requestId = args[0];
+    uid = args[1];
+    nspName = args[2];
+
+    if (uid == this.uid) return debug('ignore same uid');
+
+    if (!nspName || nspName != this.nsp.name) {
+      return debug('ignore different namespace');
+    }
+
+    command = args[3];
+    response = args[4];
+    options = args[5] || {};
+
+    result = this.getCallbackOnRedisCommand(command)(requestId, options);
+
+    var commandMessage = msgpack.encode([requestId, this.uid, result]);
+    pub.publish(response, commandMessage);
+  };
+
+  
+  Redis.prototype.getCallbackOnRedisCommand = function(command, request, options) {
+    if ( typeof( opts[command] ) == "function") {
+      return opts[command].bind( this.nsp );
+    } else {
+      return this.callbackOnRedisCommand_basic.bind(this, command);
+    }
+  }  
+  
+  
+  Redis.prototype.callbackOnRedisCommand_basic= function(command, request, options) {
+    return {
+      request: request,
+      response: {
+        options: options,
+        info: 'Method for command "' + command + '" not implemented'
+      }
+    }; 
+  }
+
   Redis.uid = uid;
   Redis.pubClient = pub;
   Redis.subClient = sub;
@@ -247,3 +352,25 @@ function adapter(uri, opts){
   return Redis;
 
 }
+
+function getClients (request, options){
+  var clients = [];
+
+  if(!options){ options = {}; }
+
+  for (var id in this.connected) {
+    if(options.room) {
+      var index = this.connected[id].rooms.indexOf(options.room);
+      if(index !== -1) {
+        clients.push(this.connected[id]);
+      }
+    } else {
+      clients.push(this.connected[id]);  
+    }
+  }
+
+  return {
+    request: request,
+    response: clients.map(function(socket){ return socket.id; })
+  }; 
+}  
