@@ -57,6 +57,7 @@ function adapter(uri, opts){
 
   var commandListener = redis(port, host, { detect_buffers: true });
   var responseListener = redis(port, host, { detect_buffers: true });
+  var pubsubManager = redis(port, host, { detect_buffers: true });
 
   // this server's key
   var uid = uid2(6);
@@ -257,17 +258,24 @@ function adapter(uri, opts){
 
   Redis.prototype.requestToAll = function(command, options){
     var requestId = uid2(6);
+    
     var responseChannel = prefix + '#response#' + this.nsp.name + '#' + requestId;
+    var commandsChannel = prefix + '#commands#' + this.nsp.name + '#';
+    
+    var msg = msgpack.encode([requestId, this.uid, this.nsp.name, command, responseChannel, options]);
+    
     var deferred = Q.defer();
     var deferedPromise = deferred.promise;
-
+    
+    var quantity = 1;
+    
     
     function responseCallback(channel, msg) {
       var params = msgpack.decode(msg),
           answererRequestId = params[0], 
           answererServerId = params[1], 
           answererResponse = params[2];
-      
+
       deferedPromise.then(function(data) {
         if (data.request != answererRequestId) {
           return data;
@@ -276,23 +284,38 @@ function adapter(uri, opts){
         data.servers[answererServerId] = answererResponse;
         return data;
       });
+
+      quantity--;
+      
+      if ( !quantity ) { resolve(); }
     }
 
-    responseListener.subscribe(responseChannel, function(err){
-      if (err) this.emit('error', err);
-    }.bind(this));
-    responseListener.on('message', responseCallback);
-    
-    var chn = prefix + '#commands#' + this.nsp.name + '#';
-    var msg = msgpack.encode([requestId, this.uid, this.nsp.name, command, responseChannel, options]);
-    
-    pub.publish(chn, msg);
-
-    setTimeout(function() {
+ 
+    function resolve() {
       deferred.resolve({request: requestId});
       responseListener.removeListener('message', responseCallback);
       responseListener.unsubscribe(responseChannel);
-    }, commandTimeout);
+    }
+
+
+    pubsubManager.pubsub('NUMSUB', commandsChannel, function (err, subs){
+      if (err) return deferred.reject(err);
+      
+      quantity = parseInt( subs[1], 10 ) || 1;
+
+      quantity--;
+
+      if( quantity > 0) {
+        responseListener.subscribe(responseChannel, function(err){
+          if (err) this.emit('error', err);
+        }.bind(this));
+        responseListener.on('message', responseCallback);
+        pub.publish(commandsChannel, msg);
+        setTimeout(resolve, commandTimeout);
+      } else {
+        deferred.resolve({request: requestId});
+      }
+    });
 
     return deferedPromise.then(function(data) {
       data.servers = data.servers || {};
