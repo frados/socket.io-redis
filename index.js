@@ -64,7 +64,7 @@ function adapter(uri, opts){
 
   // Callback for 'getClients' request
   opts.getClients = getClients;
-  
+
   /**
    * Adapter constructor.
    *
@@ -229,7 +229,8 @@ function adapter(uri, opts){
 
     if (!rooms) return process.nextTick(fn.bind(null, null));
 
-    async.forEach(Object.keys(rooms), function(room, next){
+    async.forEach(Object.keys(rooms), function(room, next) {
+      self.rooms[room] = self.rooms[room] || {};
       if (rooms.hasOwnProperty(room)) {
         delete self.rooms[room][id];
       }
@@ -258,22 +259,22 @@ function adapter(uri, opts){
 
   Redis.prototype.requestToAll = function(command, options){
     var requestId = uid2(6);
-    
+
     var responseChannel = prefix + '#response#' + this.nsp.name + '#' + requestId;
     var commandsChannel = prefix + '#commands#' + this.nsp.name + '#';
-    
+
     var msg = msgpack.encode([requestId, this.uid, this.nsp.name, command, responseChannel, options]);
-    
+
     var deferred = Q.defer();
     var deferedPromise = deferred.promise;
-    
+
     var quantity = 1;
-    
-    
+
+
     function responseCallback(channel, msg) {
       var params = msgpack.decode(msg),
-          answererRequestId = params[0], 
-          answererServerId = params[1], 
+          answererRequestId = params[0],
+          answererServerId = params[1],
           answererResponse = params[2];
 
       deferedPromise.then(function(data) {
@@ -286,11 +287,11 @@ function adapter(uri, opts){
       });
 
       quantity--;
-      
+
       if ( !quantity ) { resolve(); }
     }
 
- 
+
     function resolve() {
       deferred.resolve({request: requestId});
       responseListener.removeListener('message', responseCallback);
@@ -300,7 +301,7 @@ function adapter(uri, opts){
 
     pubsubManager.pubsub('NUMSUB', commandsChannel, function (err, subs){
       if (err) return deferred.reject(err);
-      
+
       quantity = parseInt( subs[1], 10 ) || 1;
 
       quantity--;
@@ -320,13 +321,13 @@ function adapter(uri, opts){
     return deferedPromise.then(function(data) {
       data.servers = data.servers || {};
       data.servers[this.uid] = this.getCallbackOnRedisCommand(command)(requestId, options);
-      return data; 
+      return data;
     }.bind(this) );
   };
 
 
   Redis.prototype.oncommand = function(channel, msg){
-    var args = msgpack.decode(msg), 
+    var args = msgpack.decode(msg),
         nspName, command, options, response, result, requestId;
 
     requestId = args[0];
@@ -349,15 +350,15 @@ function adapter(uri, opts){
     pub.publish(response, commandMessage);
   };
 
-  
+
   Redis.prototype.getCallbackOnRedisCommand = function(command, request, options) {
     if ( typeof( opts[command] ) == "function") {
       return opts[command].bind( this.nsp );
     } else {
       return this.callbackOnCommand.bind(this, command);
     }
-  }  
-  
+  }
+
   // Default callback for any commands
   Redis.prototype.callbackOnCommand = function(command, request, options) {
     return {
@@ -366,7 +367,7 @@ function adapter(uri, opts){
         options: options,
         info: 'Method for command "' + command + '" not implemented'
       }
-    }; 
+    };
   }
 
   Redis.uid = uid;
@@ -380,8 +381,8 @@ function adapter(uri, opts){
 
 /**
  * Function that runs on each of socket.io nodes. It returns list of active connections(ID)
- * 
- * @param  {String} request 
+ *
+ * @param  {String} request
  * @param  {Object} options
  * @return {Object} { request: "request ID", response: {...} }
  */
@@ -397,12 +398,12 @@ function getClients (request, options){
         clients.push(this.connected[id]);
       }
     } else {
-      clients.push(this.connected[id]);  
+      clients.push(this.connected[id]);
     }
   }
 
   return {
     request: request,
     response: clients.map(function(socket){ return socket.id; })
-  }; 
-}  
+  };
+}
